@@ -1,0 +1,11 @@
+{
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "js/ts.preferences.importModuleSpecifier": "non-relative",
+  "js/ts.preferences.organizeImports": {
+    "caseSensitivity": "caseInsensitive"
+  }
+}
