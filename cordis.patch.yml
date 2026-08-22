@@ -1,0 +1,3 @@
+- insert:
+    - id: public-proxy
+      name: dsh-public-proxy
