@@ -27,7 +27,8 @@ All options are set in `$DSH_HOME/profiles/web/cordis.patch.yml`:
   config:
     host: "0.0.0.0"
     port: 3081
-    randomUuidPolyfill: true # browsers have no crypto.randomUUID when bypassing the secure context; inject a polyfill
+    applyRandomUuidPatch: true
+    applyLoopbackCheckPatch: true
 ```
 
 ## Security

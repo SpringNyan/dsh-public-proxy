@@ -10,19 +10,21 @@ export const name = PLUGIN_NAME;
 export const inject = ["webServer"];
 
 export interface Config {
-  host: "127.0.0.1" | "0.0.0.0";
+  host: string;
   port: number;
-  randomUuidPolyfill: boolean;
+  applyRandomUuidPatch: boolean;
+  applyLoopbackCheckPatch: boolean;
 }
 
 export const Config: z<Config> = z.object({
-  host: z.union([z.const("127.0.0.1"), z.const("0.0.0.0")]).default("0.0.0.0"),
+  host: z.string().default("0.0.0.0"),
   port: z.natural().max(65535).default(3081),
-  randomUuidPolyfill: z.boolean().default(true),
+  applyRandomUuidPatch: z.boolean().default(true),
+  applyLoopbackCheckPatch: z.boolean().default(true),
 });
 
 export function apply(ctx: Context, config: Config): void {
-  if (config.randomUuidPolyfill) {
+  if (config.applyRandomUuidPatch) {
     ctx.effect(
       () => ctx.webServer.tapIndex(injectRandomUuidPolyfill),
       `[${PLUGIN_NAME}] randomUUID polyfill index tap`,
@@ -31,7 +33,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(async () => {
     const target = `http://127.0.0.1:${String(ctx.webServer.port)}`;
-    const proxy = createProxyServer(ctx, target);
+    const proxy = createProxyServer(ctx, config, target);
     await proxy.listen(config.port, config.host);
     console.log(
       `[${PLUGIN_NAME}] public proxy ${config.host}:${String(config.port)} -> ${target}`,
