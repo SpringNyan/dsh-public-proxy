@@ -1,0 +1,44 @@
+# dsh-public-proxy
+
+A DeepSeek Harness plugin that exposes the DSH Web UI for LAN access.
+
+## Install
+
+```sh
+dsh plugin --profile web add dsh-public-proxy@latest
+```
+
+## Usage
+
+Once the plugin is running, it listens on port **3081** by default. Other devices on the same LAN can access the Web UI at:
+
+```
+http://<this-machine-LAN-IP>:3081
+```
+
+e.g. `http://192.168.1.100:3081`
+
+## Config
+
+Options can be configured in `$DSH_HOME/profiles/web/cordis.patch.yml`:
+
+```yaml
+- id: public-proxy
+  config:
+    host: "0.0.0.0"
+    port: 3081
+    applyRandomUuidPatch: true
+    applyLoopbackCheckPatch: true
+```
+
+## Security
+
+DSH itself refuses to bind `0.0.0.0` with the official error:
+
+> `error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead`
+
+This plugin intentionally bypasses that restriction for LAN access. Listening on `0.0.0.0` exposes the Web UI to the whole network — anyone on it can reach the machine. Only enable this on trusted LANs, and never expose the proxy directly to the public internet.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,26 +1,26 @@
 # dsh-public-proxy
 
-A DeepSeek Harness plugin that exposes the DSH Web UI for LAN access.
+一个 DeepSeek Harness 插件，用于将 DSH Web UI 暴露给局域网访问。
 
-## Install
+## 安装
 
 ```sh
 dsh plugin --profile web add dsh-public-proxy@latest
 ```
 
-## Usage
+## 使用方法
 
-Once the plugin is running, it listens on port **3081**. Other devices on the same LAN can access the Web UI at:
+插件运行后，默认会在 **3081** 端口监听。局域网内的其他设备可以通过以下地址访问 Web UI：
 
 ```
-http://<this-machine-LAN-IP>:3081
+http://<本机局域网IP>:3081
 ```
 
-e.g. `http://192.168.1.100:3081`
+例如 `http://192.168.1.100:3081`
 
-## Config
+## 配置
 
-All options are set in `$DSH_HOME/profiles/web/cordis.patch.yml`:
+可以在 `$DSH_HOME/profiles/web/cordis.patch.yml` 中配置选项：
 
 ```yaml
 - id: public-proxy
@@ -31,14 +31,14 @@ All options are set in `$DSH_HOME/profiles/web/cordis.patch.yml`:
     applyLoopbackCheckPatch: true
 ```
 
-## Security
+## 安全警告
 
-DSH itself refuses to bind `0.0.0.0` with the official error:
+DSH 本身拒绝绑定 `0.0.0.0`，会返回以下官方错误：
 
 > `error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead`
 
-This plugin intentionally bypasses that restriction for LAN access. Listening on `0.0.0.0` exposes the Web UI to the whole network — anyone on it can reach the machine. Only enable this on trusted LANs, and never expose the proxy to the public internet.
+本插件有意绕过此限制以实现局域网访问。监听 `0.0.0.0` 会将 Web UI 暴露给整个网络 —— 网络中的任何人都可以访问该机器。请仅在可信任的局域网中启用此功能，切勿将代理直接暴露到公网。
 
-## License
+## 许可证
 
-MIT — see [LICENSE](LICENSE).
+MIT — 详见 [LICENSE](LICENSE)。
