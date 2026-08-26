@@ -1,5 +1,9 @@
 # dsh-public-proxy
 
+[![npm version](https://img.shields.io/npm/v/dsh-public-proxy.svg)](https://www.npmjs.com/package/dsh-public-proxy)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-public-proxy.svg)](https://www.npmjs.com/package/dsh-public-proxy)
+[![License](https://img.shields.io/npm/l/dsh-public-proxy.svg)](https://github.com/SpringNyan/dsh-public-proxy/blob/main/LICENSE)
+
 一个 DeepSeek Harness 插件，用于将 DSH Web UI 暴露给局域网访问。
 
 ## 安装
@@ -20,7 +24,7 @@ http://<本机局域网IP>:3081
 
 ## 配置
 
-可以在 `$DSH_HOME/profiles/web/cordis.patch.yml` 中配置选项：
+可以在 `$DSH_HOME/profiles/web/cordis.patch.yml` 中配置参数（以下为默认值）：
 
 ```yaml
 - id: public-proxy
@@ -29,7 +33,25 @@ http://<本机局域网IP>:3081
     port: 3081
     applyRandomUuidPatch: true
     applyLoopbackCheckPatch: true
+    accessKey: ""
+    enableCookieAuth: false
 ```
+
+### 访问控制
+
+默认情况下，代理不启用访问控制，局域网内任何人都可以访问。如果你需要保护代理，可以启用 Cookie 认证：
+
+```yaml
+- id: public-proxy
+  config:
+    # ... 其他配置
+    accessKey: "your-secret-key"
+    enableCookieAuth: true
+```
+
+启用后，访问代理时会要求输入访问密钥。密钥通过 Cookie 存储，当前会话内无需重复输入。
+
+**注意：** 由于代理使用 HTTP 明文传输，访问密钥可能被网络监听者截获。仅在可信任的局域网环境中使用。
 
 ## 安全警告
 
