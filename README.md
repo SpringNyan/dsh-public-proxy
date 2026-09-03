@@ -6,6 +6,8 @@
 
 一个 DeepSeek Harness 插件，用于将 DSH Web UI 暴露给局域网访问。
 
+**简体中文** | [English](README_EN.md)
+
 ## 安装
 
 ```sh
@@ -32,9 +34,10 @@ http://<本机局域网IP>:3081
     host: "0.0.0.0"
     port: 3081
     applyRandomUuidPatch: true
-    applyLoopbackCheckPatch: true
+    applyIsLoopbackPatch: true
     accessKey: ""
     enableCookieAuth: false
+    bypassLaunchToken: false
 ```
 
 ### 访问控制
@@ -49,9 +52,22 @@ http://<本机局域网IP>:3081
     enableCookieAuth: true
 ```
 
-启用后，访问代理时会要求输入访问密钥。密钥通过 Cookie 存储，当前会话内无需重复输入。
+启用后，访问代理时会要求输入访问密钥。密钥通过 Cookie 存储，30 天内无需重复输入。
 
 **注意：** 由于代理使用 HTTP 明文传输，访问密钥可能被网络监听者截获。仅在可信任的局域网环境中使用。
+
+### 启动令牌绕过
+
+DSH Web UI 默认通过启动令牌保护，访问时需要在 URL 中携带令牌。启用 `bypassLaunchToken` 后，客户端直接访问代理即可，无需在 URL 中携带令牌：
+
+```yaml
+- id: public-proxy
+  config:
+    # ... 其他配置
+    bypassLaunchToken: true
+```
+
+**注意：** 该选项会绕过 DSH 的启动令牌保护。建议与 `enableCookieAuth` 配合使用，通过访问密钥代替启动令牌来控制访问权限。
 
 ## 安全警告
 

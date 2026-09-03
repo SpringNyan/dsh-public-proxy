@@ -11,18 +11,36 @@ import {
   getAccessKeyFromHeaders,
   stripAccessKeyFromHeaders,
 } from "./auth.js";
-import { PLUGIN_NAME } from "./constants.js";
+import { LAUNCH_TOKEN_QUERY, PLUGIN_NAME } from "./constants.js";
 import { FakeResponse } from "./fake-response.js";
 import type { Config } from "./index.js";
 
 interface PatchRule {
-  match(path: string): boolean;
+  match(url: string): boolean;
   replace: readonly (readonly [from: string, to: string])[];
 }
 
 const LOOPBACK_HOSTNAME_PATCH_RULE: PatchRule = {
-  match: (path) =>
-    path === "/plugins/@deepseek-ai/dsh-client-connection/client.js",
+  match: (url) => {
+    const target = "@deepseek-ai/dsh-client-connection/client.js";
+    let parsed: URL;
+    try {
+      parsed = new URL(url, "http://x");
+    } catch {
+      return false;
+    }
+    if (parsed.pathname === `/plugins/${target}`) {
+      return true;
+    }
+    if (parsed.pathname === "/plugins/") {
+      for (const [key] of parsed.searchParams) {
+        if (key.startsWith("?") && key.slice(1).split(",").includes(target)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  },
   replace: [
     [
       "function isLoopbackHostname(hostname) {",
@@ -65,19 +83,26 @@ function rejectUpgradeUnauthorized(socket: net.Socket): void {
   );
 }
 
+function appendLaunchTokenQuery(reqUrl: string, token: string): string {
+  const u = new URL(reqUrl, "http://x");
+  u.searchParams.set(LAUNCH_TOKEN_QUERY, token);
+  return `${u.pathname}${u.search}`;
+}
+
 export function createProxyServer(
   ctx: Context,
   config: Config,
   target: string,
+  launchTokenProvider?: () => string | null,
 ): {
   listen(port: number, hostname?: string): Promise<{ port: number }>;
   close(): Promise<void>;
 } {
   const allPatchRules = [
-    config.applyLoopbackCheckPatch ? LOOPBACK_HOSTNAME_PATCH_RULE : null,
+    config.applyIsLoopbackPatch ? LOOPBACK_HOSTNAME_PATCH_RULE : null,
   ].filter((x) => x != null);
-  const filterPatchRules = (path: string): PatchRule[] =>
-    allPatchRules.filter((patchRule) => patchRule.match(path));
+  const filterPatchRules = (url: string): PatchRule[] =>
+    allPatchRules.filter((patchRule) => patchRule.match(url));
 
   const verifyAccess: AccessKeyVerifier | null = config.enableCookieAuth
     ? createAccessKeyVerifier(config.accessKey)
@@ -96,21 +121,37 @@ export function createProxyServer(
     res.on("close", () => {
       realResByReq.delete(req);
     });
+    handleRequest(req, res).catch((err: unknown) => {
+      ctx.logger.error(`[${PLUGIN_NAME}] response error:`, err);
+      respondBadGateway(res);
+    });
+  });
 
+  async function handleRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     const pathname = extractPathname(req);
+    const isIndex = isIndexPath(pathname);
+
     if (verifyAccess) {
       const accessKey = getAccessKeyFromHeaders(req.headers);
       if (!verifyAccess(accessKey)) {
-        if (isIndexPath(pathname)) {
-          const headers: http.OutgoingHttpHeaders = {
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-          };
+        if (isIndex) {
           if (accessKey) {
-            headers["set-cookie"] = [buildAccessKeySetCookie(null)];
+            res.writeHead(401, {
+              "content-type": "text/plain",
+              "cache-control": "no-store",
+              "set-cookie": [buildAccessKeySetCookie(null)],
+            });
+            res.end("access key is invalid");
+          } else {
+            res.writeHead(200, {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "no-store",
+            });
+            res.end(LOGIN_PAGE_HTML);
           }
-          res.writeHead(200, headers);
-          res.end(LOGIN_PAGE_HTML);
         } else {
           res.writeHead(401, { "content-type": "text/plain" });
           res.end("unauthorized");
@@ -121,61 +162,78 @@ export function createProxyServer(
     }
 
     rewriteOrigin(req.headers);
-    const patchRules = filterPatchRules(pathname);
-    const fakeRes =
+    const patchRules = filterPatchRules(req.url ?? "");
+    let fakeRes =
       req.method === "GET" &&
-      ((verifyAccess && isIndexPath(pathname)) || patchRules.length > 0)
+      ((isIndex && (verifyAccess || config.bypassLaunchToken)) ||
+        patchRules.length > 0)
         ? new FakeResponse()
         : null;
-    proxy
-      .web(req, (fakeRes ?? res) as http.ServerResponse)
-      .then(() => {
-        if (!fakeRes) {
-          return;
+    if (fakeRes) {
+      delete req.headers["accept-encoding"];
+    }
+
+    await proxy.web(req, (fakeRes ?? res) as http.ServerResponse);
+    if (
+      config.bypassLaunchToken &&
+      isIndex &&
+      req.method === "GET" &&
+      fakeRes?.statusCode === 401
+    ) {
+      const token = launchTokenProvider?.();
+      if (token) {
+        const retryReq = new http.IncomingMessage(new net.Socket());
+        retryReq.method = req.method;
+        retryReq.url = appendLaunchTokenQuery(req.url ?? "", token);
+        retryReq.headers = { ...req.headers };
+        retryReq.push(null);
+        realResByReq.set(retryReq, res);
+        fakeRes = new FakeResponse();
+        try {
+          await proxy.web(retryReq, fakeRes as unknown as http.ServerResponse);
+        } finally {
+          retryReq.destroy();
         }
-        if (!fakeRes.writableFinished) {
-          respondBadGateway(res);
-          return;
+      }
+    }
+
+    if (!fakeRes) {
+      return;
+    }
+    if (!fakeRes.writableFinished) {
+      respondBadGateway(res);
+      return;
+    }
+    const headers = fakeRes.getHeaders();
+    if (verifyAccess && isIndex && fakeRes.statusCode === 200) {
+      const existingSetCookie = headers["set-cookie"];
+      headers["set-cookie"] = [
+        ...(typeof existingSetCookie === "string"
+          ? [existingSetCookie]
+          : (existingSetCookie ?? [])),
+        buildAccessKeySetCookie(config.accessKey),
+      ];
+    }
+    let body = fakeRes.body;
+    if (fakeRes.statusCode === 200) {
+      let text = body.toString();
+      for (const patchRule of patchRules) {
+        for (const [from, to] of patchRule.replace) {
+          text = text.replaceAll(from, to);
         }
-        const headers = fakeRes.getHeaders();
-        if (
-          verifyAccess &&
-          isIndexPath(pathname) &&
-          fakeRes.statusCode === 200
-        ) {
-          const existingSetCookie = headers["set-cookie"];
-          headers["set-cookie"] = [
-            ...(typeof existingSetCookie === "string"
-              ? [existingSetCookie]
-              : (existingSetCookie ?? [])),
-            buildAccessKeySetCookie(config.accessKey),
-          ];
-        }
-        let body = fakeRes.body;
-        if (fakeRes.statusCode === 200) {
-          let text = body.toString();
-          for (const patchRule of patchRules) {
-            for (const [from, to] of patchRule.replace) {
-              text = text.replaceAll(from, to);
-            }
-          }
-          body = Buffer.from(text);
-          const contentLength = headers["content-length"];
-          if (
-            typeof contentLength === "string" ||
-            typeof contentLength === "number"
-          ) {
-            headers["content-length"] = String(body.byteLength);
-          }
-        }
-        res.writeHead(fakeRes.statusCode, fakeRes.statusMessage, headers);
-        res.end(body);
-      })
-      .catch((err: unknown) => {
-        ctx.logger.error(`[${PLUGIN_NAME}] response error:`, err);
-        respondBadGateway(res);
-      });
-  });
+      }
+      body = Buffer.from(text);
+      const contentLength = headers["content-length"];
+      if (
+        typeof contentLength === "string" ||
+        typeof contentLength === "number"
+      ) {
+        headers["content-length"] = String(body.byteLength);
+      }
+    }
+    res.writeHead(fakeRes.statusCode, fakeRes.statusMessage, headers);
+    res.end(body);
+  }
   proxy.on("error", (err, req, res) => {
     ctx.logger.warn(`[${PLUGIN_NAME}] upstream error:`, err);
     if (res instanceof net.Socket) {
