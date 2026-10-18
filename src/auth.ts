@@ -1,4 +1,4 @@
-import { parseCookie, stringifyCookie, stringifySetCookie } from "cookie";
+import { parseCookie, stringifySetCookie } from "cookie";
 import type http from "node:http";
 import { PLUGIN_NAME } from "./constants.js";
 
@@ -6,7 +6,7 @@ export const ACCESS_KEY_COOKIE = `${PLUGIN_NAME.replaceAll("-", "_")}_access_key
 
 export const LOGIN_PAGE_HTML = `<!doctype html><script>(function(){var KEY=${JSON.stringify(
   ACCESS_KEY_COOKIE,
-)};var input=window.prompt("Please enter the access key:","");if(input){document.cookie=KEY+"="+encodeURIComponent(input)+"; path=/; samesite=strict"}location.reload()})();</script>`;
+)};var input=window.prompt("Enter the access key:","");if(!input)return;document.cookie=KEY+"="+encodeURIComponent(input)+"; path=/; samesite=lax";location.reload()})();</script>`;
 
 export type AccessKeyVerifier = (value: string | undefined) => boolean;
 export function createAccessKeyVerifier(accessKey: string): AccessKeyVerifier {
@@ -31,12 +31,11 @@ export function stripAccessKeyFromHeaders(
     return;
   }
 
-  const parsed = parseCookie(cookie);
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-  delete parsed[ACCESS_KEY_COOKIE];
-
-  const keptCookie = stringifyCookie(parsed);
-  if (!keptCookie) {
+  const keptCookie = cookie
+    .split(";")
+    .filter((part) => parseCookie(part)[ACCESS_KEY_COOKIE] === undefined)
+    .join(";");
+  if (!keptCookie.trim()) {
     delete headers.cookie;
   } else {
     headers.cookie = keptCookie;
@@ -52,7 +51,7 @@ export function buildAccessKeySetCookie(value: string | null): string {
     value: value ?? "",
     path: "/",
     httpOnly: true,
-    sameSite: "strict",
+    sameSite: "lax",
   } as const;
 
   return value

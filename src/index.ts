@@ -4,7 +4,6 @@ import type {} from "@deepseek-ai/dsh-host-webserver";
 import z from "@deepseek-ai/schemastery";
 import { LAUNCH_TOKEN_QUERY, PLUGIN_NAME } from "./constants.js";
 import { createProxyServer } from "./proxy.js";
-import { injectRandomUuidPolyfill } from "./uuid.js";
 
 export const name = PLUGIN_NAME;
 
@@ -13,86 +12,80 @@ export const inject = ["connection", "webServer"];
 export interface Config {
   host: string;
   port: number;
-  applyRandomUuidPatch: boolean;
-  applyIsLoopbackPatch: boolean;
+  bypassDshWebAuth: boolean;
   accessKey: string;
   enableCookieAuth: boolean;
-  bypassLaunchToken: boolean;
 }
 
 export const Config: z<Config> = z.object({
   host: z.string().default("0.0.0.0"),
   port: z.natural().max(65535).default(3081),
-  applyRandomUuidPatch: z.boolean().default(true),
-  applyIsLoopbackPatch: z.boolean().default(true),
+  bypassDshWebAuth: z.boolean().default(false),
   accessKey: z.string().default(""),
   enableCookieAuth: z.boolean().default(false),
-  bypassLaunchToken: z.boolean().default(false),
 });
 
-export function apply(ctx: Context, config: Config): void {
-  if (config.enableCookieAuth) {
-    if (!config.accessKey) {
-      console.error(
-        `[${PLUGIN_NAME}] error: cookie auth is enabled, but the access key is missing. please configure accessKey.`,
-      );
-      return;
-    }
-  } else if (config.bypassLaunchToken) {
-    console.warn(
-      `[${PLUGIN_NAME}] warning: no auth is enabled. your proxy is publicly accessible without authentication.`,
+function resolveLaunchToken(ctx: Context, target: string): string {
+  let token: string | null;
+  try {
+    token = new URL(ctx.connection.authenticatedUrl(target)).searchParams.get(
+      LAUNCH_TOKEN_QUERY,
+    );
+  } catch {
+    // URL parsing errors can contain the authenticated URL. Do not log the cause.
+    throw new Error(
+      `[${PLUGIN_NAME}] failed to enable bypassDshWebAuth: failed to obtain the DSH launch token`,
+    );
+  }
+  if (!token) {
+    throw new Error(
+      `[${PLUGIN_NAME}] failed to enable bypassDshWebAuth: DSH returned no launch token`,
+    );
+  }
+  return token;
+}
+
+export async function apply(ctx: Context, config: Config): Promise<void> {
+  if (config.enableCookieAuth && !config.accessKey) {
+    throw new Error(
+      `[${PLUGIN_NAME}] enableCookieAuth requires accessKey to be non-empty`,
     );
   }
 
-  if (config.applyRandomUuidPatch) {
-    ctx.effect(
-      () => ctx.webServer.tapIndex(injectRandomUuidPolyfill),
-      `[${PLUGIN_NAME}] randomUUID patch`,
+  const target = new URL(ctx.webServer.getOrigin());
+  if (target.protocol !== "http:") {
+    throw new Error(
+      `[${PLUGIN_NAME}] Only HTTP upstreams are supported; configure the DSH Web service to use HTTP`,
     );
   }
+  const launchToken = config.bypassDshWebAuth
+    ? resolveLaunchToken(ctx, target.origin)
+    : undefined;
+  const proxy = createProxyServer(ctx, config, target, launchToken);
+  ctx.effect(() => () => proxy.close(), `${PLUGIN_NAME}: proxy`);
 
-  ctx.effect(async () => {
-    let cachedLaunchToken: string | null | undefined;
-    const launchTokenProvider = (): string | null => {
-      if (cachedLaunchToken !== undefined) {
-        return cachedLaunchToken;
-      }
-      cachedLaunchToken = null;
-      try {
-        const tokenUrl = ctx.connection.authenticatedUrl("http://x");
-        cachedLaunchToken = new URL(tokenUrl).searchParams.get(
-          LAUNCH_TOKEN_QUERY,
-        );
-        if (cachedLaunchToken === null) {
-          ctx.logger.error(
-            `[${PLUGIN_NAME}] error: bypassLaunchToken failed to resolve the launch token: the token query is missing from`,
-            tokenUrl,
-          );
-        }
-      } catch (err) {
-        ctx.logger.error(
-          `[${PLUGIN_NAME}] error: bypassLaunchToken failed to resolve the launch token from the connection service:`,
-          err,
-        );
-      }
-      return cachedLaunchToken;
-    };
+  const displayHost = config.host.includes(":")
+    ? `[${config.host}]`
+    : config.host;
+  let port: number;
+  try {
+    ({ port } = await proxy.listen(config.port, config.host));
+  } catch (cause) {
+    throw new Error(
+      `[${PLUGIN_NAME}] failed to listen on ${displayHost}:${String(config.port)}`,
+      { cause },
+    );
+  }
+  if (ctx.fiber.uid === null) {
+    return;
+  }
 
-    const target = `http://127.0.0.1:${String(ctx.webServer.port)}`;
-    const proxy = createProxyServer(ctx, config, target, launchTokenProvider);
-    try {
-      const { port } = await proxy.listen(config.port, config.host);
-      console.log(
-        `[${PLUGIN_NAME}] proxy server is listening on ${config.host}:${String(port)} -> ${target}`,
-      );
-    } catch (err) {
-      console.error(
-        `[${PLUGIN_NAME}] error: failed to listen on ${config.host}:${String(config.port)}:`,
-        err instanceof Error ? err.message : err,
-      );
-      void ctx.fiber.dispose();
-      throw err;
-    }
-    return () => proxy.close();
-  }, `[${PLUGIN_NAME}] proxy server`);
+  const message = `[${PLUGIN_NAME}] HTTP proxy listening on ${displayHost}:${String(port)}; forwarding to ${target.origin}`;
+  console.info(message);
+  ctx.logger.info(message);
+  if (config.bypassDshWebAuth && !config.enableCookieAuth) {
+    const warning = `[${PLUGIN_NAME}] anyone who can reach this proxy can access DSH without credentials`;
+    console.warn(warning);
+    ctx.logger.warn(warning);
+  }
 }

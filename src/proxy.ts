@@ -1,8 +1,8 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { ProxyServer } from "httpxy";
+import { ProxyServer, proxyFetch } from "httpxy";
 import http from "node:http";
 import net from "node:net";
-import type { Duplex } from "node:stream";
+import { Writable, type Duplex } from "node:stream";
 import type { AccessKeyVerifier } from "./auth.js";
 import {
   LOGIN_PAGE_HTML,
@@ -12,42 +12,7 @@ import {
   stripAccessKeyFromHeaders,
 } from "./auth.js";
 import { LAUNCH_TOKEN_QUERY, PLUGIN_NAME } from "./constants.js";
-import { FakeResponse } from "./fake-response.js";
 import type { Config } from "./index.js";
-
-interface PatchRule {
-  match(url: string): boolean;
-  replace: readonly (readonly [from: string, to: string])[];
-}
-
-const LOOPBACK_HOSTNAME_PATCH_RULE: PatchRule = {
-  match: (url) => {
-    const target = "@deepseek-ai/dsh-client-connection/client.js";
-    let parsed: URL;
-    try {
-      parsed = new URL(url, "http://x");
-    } catch {
-      return false;
-    }
-    if (parsed.pathname === `/plugins/${target}`) {
-      return true;
-    }
-    if (parsed.pathname === "/plugins/") {
-      for (const [key] of parsed.searchParams) {
-        if (key.startsWith("?") && key.slice(1).split(",").includes(target)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  },
-  replace: [
-    [
-      "function isLoopbackHostname(hostname) {",
-      "function isLoopbackHostname(hostname) { return true;",
-    ],
-  ],
-};
 
 function extractPathname(req: http.IncomingMessage): string {
   try {
@@ -58,7 +23,10 @@ function extractPathname(req: http.IncomingMessage): string {
 }
 
 function respondBadGateway(res: http.ServerResponse): void {
-  if (res.headersSent || res.writableEnded) {
+  if (res.headersSent || res.writableEnded || res.destroyed) {
+    if (res.headersSent && !res.writableEnded) {
+      res.destroy();
+    }
     return;
   }
   try {
@@ -66,14 +34,10 @@ function respondBadGateway(res: http.ServerResponse): void {
       "content-type": "text/plain",
       connection: "close",
     });
-    res.end("proxy upstream error");
+    res.end("Unable to complete the request to DSH.");
   } catch {
     // the client already disconnected; nothing further to do
   }
-}
-
-function isIndexPath(pathname: string): boolean {
-  return pathname === "/" || pathname === "/index.html";
 }
 
 function rejectUpgradeUnauthorized(socket: net.Socket): void {
@@ -92,37 +56,37 @@ function appendLaunchTokenQuery(reqUrl: string, token: string): string {
 export function createProxyServer(
   ctx: Context,
   config: Config,
-  target: string,
-  launchTokenProvider?: () => string | null,
+  target: URL,
+  launchToken?: string,
 ): {
   listen(port: number, hostname?: string): Promise<{ port: number }>;
   close(): Promise<void>;
 } {
-  const allPatchRules = [
-    config.applyIsLoopbackPatch ? LOOPBACK_HOSTNAME_PATCH_RULE : null,
-  ].filter((x) => x != null);
-  const filterPatchRules = (url: string): PatchRule[] =>
-    allPatchRules.filter((patchRule) => patchRule.match(url));
-
   const verifyAccess: AccessKeyVerifier | null = config.enableCookieAuth
     ? createAccessKeyVerifier(config.accessKey)
     : null;
 
-  const proxy = new ProxyServer({ target, changeOrigin: true });
+  const proxy = new ProxyServer({
+    target: {
+      protocol: target.protocol,
+      hostname: target.hostname.replace(/^\[|\]$/g, ""),
+      host: target.host,
+      port: target.port || 80,
+    },
+    changeOrigin: true,
+  });
   const rewriteOrigin = (headers: http.IncomingHttpHeaders): void => {
     if (headers.origin) {
-      headers.origin = target;
+      headers.origin = target.origin;
     }
   };
-  const realResByReq = new WeakMap<http.IncomingMessage, http.ServerResponse>();
   const sockets = new Set<Duplex>();
   const server = http.createServer((req, res) => {
-    realResByReq.set(req, res);
-    res.on("close", () => {
-      realResByReq.delete(req);
-    });
     handleRequest(req, res).catch((err: unknown) => {
-      ctx.logger.error(`[${PLUGIN_NAME}] response error:`, err);
+      if (res.destroyed || res.writableEnded) {
+        return;
+      }
+      ctx.logger.error(`[${PLUGIN_NAME}] failed to process HTTP request:`, err);
       respondBadGateway(res);
     });
   });
@@ -132,19 +96,19 @@ export function createProxyServer(
     res: http.ServerResponse,
   ): Promise<void> {
     const pathname = extractPathname(req);
-    const isIndex = isIndexPath(pathname);
+    const isLoginRequest = req.method === "GET" && pathname === "/";
 
     if (verifyAccess) {
       const accessKey = getAccessKeyFromHeaders(req.headers);
       if (!verifyAccess(accessKey)) {
-        if (isIndex) {
+        if (isLoginRequest) {
           if (accessKey) {
             res.writeHead(401, {
               "content-type": "text/plain",
               "cache-control": "no-store",
               "set-cookie": [buildAccessKeySetCookie(null)],
             });
-            res.end("access key is invalid");
+            res.end("Invalid access key. Refresh this page to try again.");
           } else {
             res.writeHead(200, {
               "content-type": "text/html; charset=utf-8",
@@ -154,7 +118,9 @@ export function createProxyServer(
           }
         } else {
           res.writeHead(401, { "content-type": "text/plain" });
-          res.end("unauthorized");
+          res.end(
+            "Access key missing or invalid. Open the homepage to sign in.",
+          );
         }
         return;
       }
@@ -162,90 +128,84 @@ export function createProxyServer(
     }
 
     rewriteOrigin(req.headers);
-    const patchRules = filterPatchRules(req.url ?? "");
-    let fakeRes =
-      req.method === "GET" &&
-      ((isIndex && (verifyAccess || config.bypassLaunchToken)) ||
-        patchRules.length > 0)
-        ? new FakeResponse()
-        : null;
-    if (fakeRes) {
-      delete req.headers["accept-encoding"];
-    }
-
-    await proxy.web(req, (fakeRes ?? res) as http.ServerResponse);
-    if (
-      config.bypassLaunchToken &&
-      isIndex &&
-      req.method === "GET" &&
-      fakeRes?.statusCode === 401
-    ) {
-      const token = launchTokenProvider?.();
-      if (token) {
-        const retryReq = new http.IncomingMessage(new net.Socket());
-        retryReq.method = req.method;
-        retryReq.url = appendLaunchTokenQuery(req.url ?? "", token);
-        retryReq.headers = { ...req.headers };
-        retryReq.push(null);
-        realResByReq.set(retryReq, res);
-        fakeRes = new FakeResponse();
-        try {
-          await proxy.web(retryReq, fakeRes as unknown as http.ServerResponse);
-        } finally {
-          retryReq.destroy();
-        }
-      }
-    }
-
-    if (!fakeRes) {
+    if (!isLoginRequest || (!verifyAccess && !config.bypassDshWebAuth)) {
+      await proxy.web(req, res);
       return;
     }
-    if (!fakeRes.writableFinished) {
-      respondBadGateway(res);
-      return;
-    }
-    const headers = fakeRes.getHeaders();
-    if (verifyAccess && isIndex && fakeRes.statusCode === 200) {
-      const existingSetCookie = headers["set-cookie"];
-      headers["set-cookie"] = [
-        ...(typeof existingSetCookie === "string"
-          ? [existingSetCookie]
-          : (existingSetCookie ?? [])),
-        buildAccessKeySetCookie(config.accessKey),
-      ];
-    }
-    let body = fakeRes.body;
-    if (fakeRes.statusCode === 200) {
-      let text = body.toString();
-      for (const patchRule of patchRules) {
-        for (const [from, to] of patchRule.replace) {
-          text = text.replaceAll(from, to);
-        }
-      }
-      body = Buffer.from(text);
-      const contentLength = headers["content-length"];
-      if (
-        typeof contentLength === "string" ||
-        typeof contentLength === "number"
-      ) {
-        headers["content-length"] = String(body.byteLength);
+
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value !== undefined) {
+        headers.set(name, Array.isArray(value) ? value.join(", ") : value);
       }
     }
-    res.writeHead(fakeRes.statusCode, fakeRes.statusMessage, headers);
-    res.end(body);
+    headers.set("host", target.host);
+
+    const controller = new AbortController();
+    const abort = (): void => {
+      controller.abort();
+    };
+    res.once("close", abort);
+
+    try {
+      const forward = (url: string): Promise<Response> =>
+        proxyFetch(
+          {
+            host: target.hostname.replace(/^\[|\]$/g, ""),
+            port: Number(target.port) || 80,
+          },
+          new URL(url, target),
+          { headers, signal: controller.signal },
+        );
+
+      let upstream = await forward(req.url ?? "/");
+      if (config.bypassDshWebAuth && upstream.status === 401 && launchToken) {
+        await upstream.body?.pipeTo(new WritableStream());
+        upstream = await forward(
+          appendLaunchTokenQuery(req.url ?? "/", launchToken),
+        );
+      }
+
+      const cookies = upstream.headers.getSetCookie();
+      if (verifyAccess && upstream.status === 200) {
+        cookies.push(buildAccessKeySetCookie(config.accessKey));
+      }
+      res.writeHead(upstream.status, upstream.statusText, {
+        ...Object.fromEntries(upstream.headers),
+        "set-cookie": cookies,
+      });
+      if (upstream.body) {
+        await upstream.body.pipeTo(Writable.toWeb(res), { preventAbort: true });
+      } else {
+        res.end();
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        ctx.logger.warn(`[${PLUGIN_NAME}] DSH Web request failed:`, err);
+        respondBadGateway(res);
+      }
+    } finally {
+      res.removeListener("close", abort);
+    }
   }
-  proxy.on("error", (err, req, res) => {
-    ctx.logger.warn(`[${PLUGIN_NAME}] upstream error:`, err);
+  proxy.on("error", (err, _req, res) => {
+    ctx.logger.warn(`[${PLUGIN_NAME}] proxy forwarding failed:`, err);
     if (res instanceof net.Socket) {
       res.destroy();
       return;
     }
-    const realRes = req ? realResByReq.get(req) : undefined;
-    if (realRes) {
-      respondBadGateway(realRes);
+    if (res) {
+      respondBadGateway(res);
     }
   });
-  server.on("connection", (socket) => sockets.add(socket));
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  proxy.on("open", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
   server.on("upgrade", (req, socket, head) => {
     if (verifyAccess) {
       if (!verifyAccess(getAccessKeyFromHeaders(req.headers))) {
@@ -256,7 +216,10 @@ export function createProxyServer(
     }
     rewriteOrigin(req.headers);
     proxy.ws(req, socket as net.Socket, {}, head).catch((err: unknown) => {
-      ctx.logger.error(`[${PLUGIN_NAME}] ws error:`, err);
+      if (socket.destroyed) {
+        return;
+      }
+      ctx.logger.error(`[${PLUGIN_NAME}] WebSocket forwarding failed:`, err);
       socket.destroy();
     });
   });
@@ -266,6 +229,9 @@ export function createProxyServer(
         server.once("error", reject);
         server.listen(port, hostname, () => {
           server.removeListener("error", reject);
+          server.on("error", (err) => {
+            ctx.logger.error(`[${PLUGIN_NAME}] proxy listener error:`, err);
+          });
           const address = server.address();
           resolve({
             port:

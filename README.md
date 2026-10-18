@@ -4,79 +4,85 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-public-proxy.svg)](https://www.npmjs.com/package/dsh-public-proxy)
 [![License](https://img.shields.io/npm/l/dsh-public-proxy.svg)](https://github.com/SpringNyan/dsh-public-proxy/blob/main/LICENSE)
 
-一个 DeepSeek Harness 插件，用于将 DSH Web UI 暴露给局域网访问。
-
 **简体中文** | [English](README_EN.md)
+
+用于在局域网中访问 DeepSeek Harness Web UI 的代理插件，支持自定义访问密钥认证。
 
 ## 安装
 
+需要 DeepSeek Harness `>=0.2.1-rc.1`。
+
+将插件安装到 `web` profile：
+
 ```sh
-dsh plugin --profile web add dsh-public-proxy@latest
+dsh plugin --profile web add dsh-public-proxy
 ```
 
-## 使用方法
+安装后启动或重新启动 DSH Web：
 
-插件运行后，默认会在 **3081** 端口监听。局域网内的其他设备可以通过以下地址访问 Web UI：
-
-```
-http://<本机局域网IP>:3081
+```sh
+dsh web
 ```
 
-例如 `http://192.168.1.100:3081`
+## 访问 Web UI
+
+默认使用 DSH 登录认证。首次访问时，使用 DSH 输出的登录令牌：
+
+```text
+http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
+```
+
+其中，`<HOST>` 为 DSH 主机的局域网地址，`<PORT>` 为代理端口，`<DSH_LAUNCH_TOKEN>` 为 DSH 登录链接中的令牌。登录成功后，可通过 `http://<HOST>:<PORT>/` 访问。
+
+使用自定义密钥登录的配置见下文“使用访问密钥”。
 
 ## 配置
 
-可以在 `$DSH_HOME/profiles/web/cordis.patch.yml` 中配置参数（以下为默认值）：
+在 `$DSH_HOME/profiles/web/cordis.patch.yml` 中配置 `public-proxy` 节点。已有该节点时，修改其 `config` 即可。
+
+以下是全部配置项及其默认值：
 
 ```yaml
 - id: public-proxy
   config:
     host: "0.0.0.0"
     port: 3081
-    applyRandomUuidPatch: true
-    applyIsLoopbackPatch: true
+    bypassDshWebAuth: false
     accessKey: ""
     enableCookieAuth: false
-    bypassLaunchToken: false
 ```
 
-### 访问控制
+| 配置项             | 默认值      | 用途                                           |
+| ------------------ | ----------- | ---------------------------------------------- |
+| `host`             | `"0.0.0.0"` | 代理监听地址。                                 |
+| `port`             | `3081`      | 代理监听端口。                                 |
+| `bypassDshWebAuth` | `false`     | 自动完成 DSH 登录，无需手动提供登录令牌。      |
+| `accessKey`        | `""`        | 自定义访问密钥，配合 `enableCookieAuth` 使用。 |
+| `enableCookieAuth` | `false`     | 启用访问密钥认证，`accessKey` 不能为空。       |
 
-默认情况下，代理不启用访问控制，局域网内任何人都可以访问。如果你需要保护代理，可以启用 Cookie 认证：
+修改后重新启动 DSH Web。
+
+### 使用访问密钥
+
+启用访问密钥认证和自动 DSH 登录：
 
 ```yaml
 - id: public-proxy
   config:
-    # ... 其他配置
-    accessKey: "your-secret-key"
+    accessKey: "<ACCESS_KEY>"
     enableCookieAuth: true
+    bypassDshWebAuth: true
 ```
 
-启用后，访问代理时会要求输入访问密钥。密钥通过 Cookie 存储，30 天内无需重复输入。
+`<ACCESS_KEY>` 为自定义访问密钥。打开 `http://<HOST>:<PORT>/`，按提示输入密钥即可登录。
 
-**注意：** 由于代理使用 HTTP 明文传输，访问密钥可能被网络监听者截获。仅在可信任的局域网环境中使用。
+登录成功后，浏览器通过 Cookie 保存密钥，有效期为 30 天。输入错误时，刷新首页可重新输入；清除 Cookie 或更换浏览器后需要重新登录。
 
-### 启动令牌绕过
+## 使用说明
 
-DSH Web UI 默认通过启动令牌保护，访问时需要在 URL 中携带令牌。启用 `bypassLaunchToken` 后，客户端直接访问代理即可，无需在 URL 中携带令牌：
-
-```yaml
-- id: public-proxy
-  config:
-    # ... 其他配置
-    bypassLaunchToken: true
-```
-
-**注意：** 该选项会绕过 DSH 的启动令牌保护。建议与 `enableCookieAuth` 配合使用，通过访问密钥代替启动令牌来控制访问权限。
-
-## 安全警告
-
-DSH 本身拒绝绑定 `0.0.0.0`，会返回以下官方错误：
-
-> `error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead`
-
-本插件有意绕过此限制以实现局域网访问。监听 `0.0.0.0` 会将 Web UI 暴露给整个网络 —— 网络中的任何人都可以访问该机器。请仅在可信任的局域网中启用此功能，切勿将代理直接暴露到公网。
+- 使用访问密钥或自动 DSH 登录时，请先打开根地址 `/` 完成登录。
+- 代理使用明文 HTTP，适用于可信任的局域网。DSH 自身的 Web 服务也必须使用 HTTP。
 
 ## 许可证
 
-MIT — 详见 [LICENSE](LICENSE)。
+MIT，详见 [LICENSE](LICENSE)。

@@ -4,79 +4,85 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-public-proxy.svg)](https://www.npmjs.com/package/dsh-public-proxy)
 [![License](https://img.shields.io/npm/l/dsh-public-proxy.svg)](https://github.com/SpringNyan/dsh-public-proxy/blob/main/LICENSE)
 
-A DeepSeek Harness plugin that exposes the DSH Web UI for LAN access.
-
 [简体中文](README.md) | **English**
 
-## Install
+A proxy plugin for accessing the DeepSeek Harness Web UI over a LAN, with support for custom access key authentication.
+
+## Installation
+
+Requires DeepSeek Harness `>=0.2.1-rc.1`.
+
+Install the plugin in the `web` profile:
 
 ```sh
-dsh plugin --profile web add dsh-public-proxy@latest
+dsh plugin --profile web add dsh-public-proxy
 ```
 
-## Usage
+After installation, start or restart DSH Web:
 
-Once the plugin is running, it listens on port **3081** by default. Other devices on the same LAN can access the Web UI at:
-
-```
-http://<this-machine-LAN-IP>:3081
+```sh
+dsh web
 ```
 
-e.g. `http://192.168.1.100:3081`
+## Accessing the Web UI
 
-## Config
+DSH authentication is used by default. On the first visit, use the login token printed by DSH:
 
-Options can be configured in `$DSH_HOME/profiles/web/cordis.patch.yml` (defaults shown below):
+```text
+http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
+```
+
+Here, `<HOST>` is the DSH machine's LAN address, `<PORT>` is the proxy port, and `<DSH_LAUNCH_TOKEN>` is the token from the DSH login URL. After signing in, access the UI at `http://<HOST>:<PORT>/`.
+
+For custom key authentication, see “Using an Access Key” below.
+
+## Configuration
+
+Configure the `public-proxy` node in `$DSH_HOME/profiles/web/cordis.patch.yml`. If the node already exists, edit its `config`.
+
+All configuration options and their defaults are shown below:
 
 ```yaml
 - id: public-proxy
   config:
     host: "0.0.0.0"
     port: 3081
-    applyRandomUuidPatch: true
-    applyIsLoopbackPatch: true
+    bypassDshWebAuth: false
     accessKey: ""
     enableCookieAuth: false
-    bypassLaunchToken: false
 ```
 
-### Access Control
+| Option             | Default     | Purpose                                                                      |
+| ------------------ | ----------- | ---------------------------------------------------------------------------- |
+| `host`             | `"0.0.0.0"` | Proxy listening address.                                                     |
+| `port`             | `3081`      | Proxy listening port.                                                        |
+| `bypassDshWebAuth` | `false`     | Signs in to DSH automatically without requiring a login token from the user. |
+| `accessKey`        | `""`        | Custom access key, used with `enableCookieAuth`.                             |
+| `enableCookieAuth` | `false`     | Enables access key authentication; `accessKey` must not be empty.            |
 
-By default, the proxy does not enforce access control—anyone on the LAN can access it. If you need to protect the proxy, you can enable Cookie-based authentication:
+Restart DSH Web after making changes.
+
+### Using an Access Key
+
+Enable access key authentication and automatic DSH login:
 
 ```yaml
 - id: public-proxy
   config:
-    # ... other options
-    accessKey: "your-secret-key"
+    accessKey: "<ACCESS_KEY>"
     enableCookieAuth: true
+    bypassDshWebAuth: true
 ```
 
-When enabled, accessing the proxy will prompt for an access key. The key is stored via Cookie, so you won't need to re-enter it for 30 days.
+`<ACCESS_KEY>` is the custom access key. Open `http://<HOST>:<PORT>/` and enter the key when prompted to sign in.
 
-**Note:** Since the proxy uses plain HTTP, the access key may be intercepted by network eavesdroppers. Only use this in a trusted LAN environment.
+After a successful login, the browser stores the key in a cookie for 30 days. If the key is incorrect, refresh the homepage to try again. Clearing cookies or switching browsers requires signing in again.
 
-### Launch Token Bypass
+## Usage Notes
 
-By default, the DSH Web UI is protected by a launch token that must be present in the URL. When `bypassLaunchToken` is enabled, clients can access the proxy directly without including the token in the URL:
-
-```yaml
-- id: public-proxy
-  config:
-    # ... other options
-    bypassLaunchToken: true
-```
-
-**Note:** This option bypasses DSH's launch token protection. It is recommended to use it together with `enableCookieAuth`, replacing the launch token with an access key for access control.
-
-## Security Warning
-
-DSH itself refuses to bind `0.0.0.0` and returns the following official error:
-
-> `error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead`
-
-This plugin intentionally bypasses this restriction to enable LAN access. Listening on `0.0.0.0` exposes the Web UI to the whole network — anyone on the network can reach the machine. Only enable this on a trusted LAN, and never expose the proxy directly to the public internet.
+- When using an access key or automatic DSH login, open the root URL `/` first to sign in.
+- The proxy uses plain HTTP and is intended for trusted LANs. DSH's own Web service must also use HTTP.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
