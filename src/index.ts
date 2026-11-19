@@ -2,8 +2,9 @@ import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-client-connection";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import z from "@deepseek-ai/schemastery";
+import { createAccessKeyVerifier } from "./auth.js";
 import { LAUNCH_TOKEN_QUERY, PLUGIN_NAME } from "./constants.js";
-import { createProxyServer } from "./proxy.js";
+import { createDshProxyServer } from "./proxy.js";
 
 export const name = PLUGIN_NAME;
 
@@ -14,7 +15,8 @@ export interface Config {
   port: number;
   bypassDshWebAuth: boolean;
   accessKey: string;
-  enableCookieAuth: boolean;
+  cookieAuth: boolean;
+  headerAuth: boolean;
 }
 
 export const Config: z<Config> = z.object({
@@ -22,7 +24,8 @@ export const Config: z<Config> = z.object({
   port: z.natural().max(65535).default(3081),
   bypassDshWebAuth: z.boolean().default(false),
   accessKey: z.string().default(""),
-  enableCookieAuth: z.boolean().default(false),
+  cookieAuth: z.boolean().default(false),
+  headerAuth: z.boolean().default(false),
 });
 
 function resolveLaunchToken(ctx: Context, target: string): string {
@@ -46,9 +49,15 @@ function resolveLaunchToken(ctx: Context, target: string): string {
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
-  if (config.enableCookieAuth && !config.accessKey) {
+  const authEnabled = config.cookieAuth || config.headerAuth;
+  if (authEnabled && !config.accessKey) {
     throw new Error(
-      `[${PLUGIN_NAME}] enableCookieAuth requires accessKey to be non-empty`,
+      `[${PLUGIN_NAME}] cookieAuth/headerAuth requires accessKey to be non-empty`,
+    );
+  }
+  if (config.accessKey && !authEnabled) {
+    throw new Error(
+      `[${PLUGIN_NAME}] accessKey requires enabling cookieAuth or headerAuth`,
     );
   }
 
@@ -61,7 +70,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const launchToken = config.bypassDshWebAuth
     ? resolveLaunchToken(ctx, target.origin)
     : undefined;
-  const proxy = createProxyServer(ctx, config, target, launchToken);
+  const verifyAccessKey = authEnabled
+    ? createAccessKeyVerifier(config.accessKey)
+    : null;
+  const proxy = createDshProxyServer(
+    ctx,
+    config,
+    target,
+    verifyAccessKey,
+    launchToken,
+  );
   ctx.effect(() => () => proxy.close(), `${PLUGIN_NAME}: proxy`);
 
   const displayHost = config.host.includes(":")
@@ -83,7 +101,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const message = `[${PLUGIN_NAME}] HTTP proxy listening on ${displayHost}:${String(port)}; forwarding to ${target.origin}`;
   console.info(message);
   ctx.logger.info(message);
-  if (config.bypassDshWebAuth && !config.enableCookieAuth) {
+  if (config.bypassDshWebAuth && !authEnabled) {
     const warning = `[${PLUGIN_NAME}] anyone who can reach this proxy can access DSH without credentials`;
     console.warn(warning);
     ctx.logger.warn(warning);

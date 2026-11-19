@@ -2,14 +2,16 @@ import type { Context } from "@deepseek-ai/cordis";
 import { ProxyServer, proxyFetch } from "httpxy";
 import http from "node:http";
 import net from "node:net";
-import { Writable, type Duplex } from "node:stream";
+import { Writable } from "node:stream";
 import type { AccessKeyVerifier } from "./auth.js";
 import {
   LOGIN_PAGE_HTML,
+  buildAccessKeyClearCookie,
   buildAccessKeySetCookie,
-  createAccessKeyVerifier,
-  getAccessKeyFromHeaders,
-  stripAccessKeyFromHeaders,
+  getAccessKeyFromCookie,
+  getAccessKeyFromHeader,
+  stripAccessKeyCookie,
+  stripAccessKeyHeader,
 } from "./auth.js";
 import { LAUNCH_TOKEN_QUERY, PLUGIN_NAME } from "./constants.js";
 import type { Config } from "./index.js";
@@ -53,18 +55,24 @@ function appendLaunchTokenQuery(reqUrl: string, token: string): string {
   return `${u.pathname}${u.search}`;
 }
 
-export function createProxyServer(
+export function createDshProxyServer(
   ctx: Context,
   config: Config,
   target: URL,
+  verifyAccessKey: AccessKeyVerifier | null,
   launchToken?: string,
 ): {
   listen(port: number, hostname?: string): Promise<{ port: number }>;
   close(): Promise<void>;
 } {
-  const verifyAccess: AccessKeyVerifier | null = config.enableCookieAuth
-    ? createAccessKeyVerifier(config.accessKey)
-    : null;
+  const isAuthorized = (headers: http.IncomingHttpHeaders): boolean => {
+    if (!verifyAccessKey) {
+      return true;
+    }
+    return config.headerAuth
+      ? verifyAccessKey(getAccessKeyFromHeader(headers))
+      : verifyAccessKey(getAccessKeyFromCookie(headers));
+  };
 
   const proxy = new ProxyServer({
     target: {
@@ -74,13 +82,14 @@ export function createProxyServer(
       port: target.port || 80,
     },
     changeOrigin: true,
+    autoRewrite: true,
   });
   const rewriteOrigin = (headers: http.IncomingHttpHeaders): void => {
     if (headers.origin) {
       headers.origin = target.origin;
     }
   };
-  const sockets = new Set<Duplex>();
+  const sockets = new Set<net.Socket>();
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((err: unknown) => {
       if (res.destroyed || res.writableEnded) {
@@ -98,15 +107,18 @@ export function createProxyServer(
     const pathname = extractPathname(req);
     const isLoginRequest = req.method === "GET" && pathname === "/";
 
-    if (verifyAccess) {
-      const accessKey = getAccessKeyFromHeaders(req.headers);
-      if (!verifyAccess(accessKey)) {
-        if (isLoginRequest) {
-          if (accessKey) {
+    if (verifyAccessKey) {
+      const cookieMode = config.cookieAuth && !config.headerAuth;
+      const cookieKey = cookieMode
+        ? getAccessKeyFromCookie(req.headers)
+        : undefined;
+      if (!isAuthorized(req.headers)) {
+        if (isLoginRequest && cookieMode) {
+          if (cookieKey) {
             res.writeHead(401, {
               "content-type": "text/plain",
               "cache-control": "no-store",
-              "set-cookie": [buildAccessKeySetCookie(null)],
+              "set-cookie": [buildAccessKeyClearCookie()],
             });
             res.end("Invalid access key. Refresh this page to try again.");
           } else {
@@ -119,16 +131,19 @@ export function createProxyServer(
         } else {
           res.writeHead(401, { "content-type": "text/plain" });
           res.end(
-            "Access key missing or invalid. Open the homepage to sign in.",
+            cookieMode
+              ? "Access key missing or invalid. Open the homepage to sign in."
+              : "Access key missing or invalid.",
           );
         }
         return;
       }
-      stripAccessKeyFromHeaders(req.headers);
+      stripAccessKeyCookie(req.headers);
+      stripAccessKeyHeader(req.headers);
     }
 
     rewriteOrigin(req.headers);
-    if (!isLoginRequest || (!verifyAccess && !config.bypassDshWebAuth)) {
+    if (!isLoginRequest || (!verifyAccessKey && !config.bypassDshWebAuth)) {
       await proxy.web(req, res);
       return;
     }
@@ -167,7 +182,12 @@ export function createProxyServer(
       }
 
       const cookies = upstream.headers.getSetCookie();
-      if (verifyAccess && upstream.status === 200) {
+      if (
+        config.cookieAuth &&
+        !config.headerAuth &&
+        verifyAccessKey &&
+        upstream.status === 200
+      ) {
         cookies.push(buildAccessKeySetCookie(config.accessKey));
       }
       res.writeHead(upstream.status, upstream.statusText, {
@@ -207,21 +227,24 @@ export function createProxyServer(
     socket.once("close", () => sockets.delete(socket));
   });
   server.on("upgrade", (req, socket, head) => {
-    if (verifyAccess) {
-      if (!verifyAccess(getAccessKeyFromHeaders(req.headers))) {
-        rejectUpgradeUnauthorized(socket as net.Socket);
+    if (verifyAccessKey) {
+      if (!isAuthorized(req.headers)) {
+        rejectUpgradeUnauthorized(socket as unknown as net.Socket);
         return;
       }
-      stripAccessKeyFromHeaders(req.headers);
+      stripAccessKeyCookie(req.headers);
+      stripAccessKeyHeader(req.headers);
     }
     rewriteOrigin(req.headers);
-    proxy.ws(req, socket as net.Socket, {}, head).catch((err: unknown) => {
-      if (socket.destroyed) {
-        return;
-      }
-      ctx.logger.error(`[${PLUGIN_NAME}] WebSocket forwarding failed:`, err);
-      socket.destroy();
-    });
+    proxy
+      .ws(req, socket as unknown as net.Socket, {}, head)
+      .catch((err: unknown) => {
+        if (socket.destroyed) {
+          return;
+        }
+        ctx.logger.error(`[${PLUGIN_NAME}] WebSocket forwarding failed:`, err);
+        socket.destroy();
+      });
   });
   return {
     listen: (port, hostname) =>

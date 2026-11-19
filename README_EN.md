@@ -49,7 +49,8 @@ All configuration options and their defaults are shown below:
     port: 3081
     bypassDshWebAuth: false
     accessKey: ""
-    enableCookieAuth: false
+    cookieAuth: false
+    headerAuth: false
 ```
 
 | Option             | Default     | Purpose                                                                      |
@@ -57,12 +58,13 @@ All configuration options and their defaults are shown below:
 | `host`             | `"0.0.0.0"` | Proxy listening address.                                                     |
 | `port`             | `3081`      | Proxy listening port.                                                        |
 | `bypassDshWebAuth` | `false`     | Signs in to DSH automatically without requiring a login token from the user. |
-| `accessKey`        | `""`        | Custom access key, used with `enableCookieAuth`.                             |
-| `enableCookieAuth` | `false`     | Enables access key authentication; `accessKey` must not be empty.            |
+| `accessKey`        | `""`        | Custom access key, used with `cookieAuth` / `headerAuth`.                    |
+| `cookieAuth`       | `false`     | Enables access key authentication (cookie); `accessKey` must not be empty.   |
+| `headerAuth`       | `false`     | Enables access key authentication (header); `accessKey` must not be empty.   |
 
 Restart DSH Web after making changes.
 
-### Using an Access Key
+### Using an Access Key (Cookie)
 
 Enable access key authentication and automatic DSH login:
 
@@ -70,7 +72,7 @@ Enable access key authentication and automatic DSH login:
 - id: public-proxy
   config:
     accessKey: "<ACCESS_KEY>"
-    enableCookieAuth: true
+    cookieAuth: true
     bypassDshWebAuth: true
 ```
 
@@ -78,9 +80,23 @@ Enable access key authentication and automatic DSH login:
 
 After a successful login, the browser stores the key in a cookie for 30 days. If the key is incorrect, refresh the homepage to try again. Clearing cookies or switching browsers requires signing in again.
 
+### Using an Access Key (Header)
+
+For non-browser clients such as reverse proxies or API tools. When enabled, requests carrying the `x-dsh-public-proxy-access-key: <ACCESS_KEY>` header are authenticated:
+
+```yaml
+- id: public-proxy
+  config:
+    accessKey: "<ACCESS_KEY>"
+    headerAuth: true
+    bypassDshWebAuth: true
+```
+
+If `cookieAuth` and `headerAuth` are enabled together, `headerAuth` takes precedence (only the header is checked) and cookie authentication does not apply.
+
 ## Usage Notes
 
-- When using an access key or automatic DSH login, open the root URL `/` first to sign in.
+- When using a cookie/header access key or automatic DSH login, open the root URL `/` first to sign in.
 - The proxy uses plain HTTP and is intended for trusted LANs. DSH's own Web service must also use HTTP.
 
 ## License

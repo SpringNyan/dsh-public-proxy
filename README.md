@@ -49,20 +49,22 @@ http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
     port: 3081
     bypassDshWebAuth: false
     accessKey: ""
-    enableCookieAuth: false
+    cookieAuth: false
+    headerAuth: false
 ```
 
-| 配置项             | 默认值      | 用途                                           |
-| ------------------ | ----------- | ---------------------------------------------- |
-| `host`             | `"0.0.0.0"` | 代理监听地址。                                 |
-| `port`             | `3081`      | 代理监听端口。                                 |
-| `bypassDshWebAuth` | `false`     | 自动完成 DSH 登录，无需手动提供登录令牌。      |
-| `accessKey`        | `""`        | 自定义访问密钥，配合 `enableCookieAuth` 使用。 |
-| `enableCookieAuth` | `false`     | 启用访问密钥认证，`accessKey` 不能为空。       |
+| 配置项             | 默认值      | 用途                                                    |
+| ------------------ | ----------- | ------------------------------------------------------- |
+| `host`             | `"0.0.0.0"` | 代理监听地址。                                          |
+| `port`             | `3081`      | 代理监听端口。                                          |
+| `bypassDshWebAuth` | `false`     | 自动完成 DSH 登录，无需手动提供登录令牌。               |
+| `accessKey`        | `""`        | 自定义访问密钥，配合 `cookieAuth` / `headerAuth` 使用。 |
+| `cookieAuth`       | `false`     | 启用访问密钥认证（Cookie 方式），`accessKey` 不能为空。 |
+| `headerAuth`       | `false`     | 启用访问密钥认证（Header 方式），`accessKey` 不能为空。 |
 
 修改后重新启动 DSH Web。
 
-### 使用访问密钥
+### 使用访问密钥（Cookie）
 
 启用访问密钥认证和自动 DSH 登录：
 
@@ -70,7 +72,7 @@ http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
 - id: public-proxy
   config:
     accessKey: "<ACCESS_KEY>"
-    enableCookieAuth: true
+    cookieAuth: true
     bypassDshWebAuth: true
 ```
 
@@ -78,9 +80,23 @@ http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
 
 登录成功后，浏览器通过 Cookie 保存密钥，有效期为 30 天。输入错误时，刷新首页可重新输入；清除 Cookie 或更换浏览器后需要重新登录。
 
+### 使用访问密钥（Header）
+
+适用于反向代理或 API 客户端等非浏览器场景。启用后，请求携带 `x-dsh-public-proxy-access-key: <ACCESS_KEY>` 请求头即可通过认证：
+
+```yaml
+- id: public-proxy
+  config:
+    accessKey: "<ACCESS_KEY>"
+    headerAuth: true
+    bypassDshWebAuth: true
+```
+
+如果 `cookieAuth` 与 `headerAuth` 同时启用，此时以 `headerAuth` 为准（仅校验请求头），Cookie 认证不生效。
+
 ## 使用说明
 
-- 使用访问密钥或自动 DSH 登录时，请先打开根地址 `/` 完成登录。
+- 使用 Cookie/Header 访问密钥或自动 DSH 登录时，请先打开根地址 `/` 完成登录。
 - 代理使用明文 HTTP，适用于可信任的局域网。DSH 自身的 Web 服务也必须使用 HTTP。
 
 ## 许可证
