@@ -92,7 +92,7 @@ http://<HOST>:<PORT>/?token=<DSH_LAUNCH_TOKEN>
     bypassDshWebAuth: true
 ```
 
-如果 `cookieAuth` 与 `headerAuth` 同时启用，此时以 `headerAuth` 为准（仅校验请求头），Cookie 认证不生效。
+如果 `cookieAuth` 与 `headerAuth` 同时启用，请求同时携带两者时以 `headerAuth` 为准（仅校验请求头）；只携带其一时校验该凭据，通过即可访问。
 
 ## 使用说明
 

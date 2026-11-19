@@ -32,14 +32,16 @@ export function getAccessKeyFromCookie(
   if (!cookie) {
     return undefined;
   }
-  return parseCookie(cookie)[ACCESS_KEY_COOKIE];
+  const key = parseCookie(cookie)[ACCESS_KEY_COOKIE];
+  return key === "" ? undefined : key;
 }
 
 export function getAccessKeyFromHeader(
   headers: http.IncomingHttpHeaders,
 ): string | undefined {
   const value = headers[ACCESS_KEY_HEADER];
-  return Array.isArray(value) ? value[0] : value;
+  const key = Array.isArray(value) ? value[0] : value;
+  return key === "" ? undefined : key;
 }
 
 export function stripAccessKeyCookie(headers: http.IncomingHttpHeaders): void {

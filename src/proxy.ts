@@ -65,13 +65,23 @@ export function createDshProxyServer(
   listen(port: number, hostname?: string): Promise<{ port: number }>;
   close(): Promise<void>;
 } {
-  const isAuthorized = (headers: http.IncomingHttpHeaders): boolean => {
+  interface PresentedAccessKeys {
+    headerKey: string | undefined;
+    cookieKey: string | undefined;
+  }
+
+  const getPresentedAccessKeys = (
+    headers: http.IncomingHttpHeaders,
+  ): PresentedAccessKeys => ({
+    headerKey: config.headerAuth ? getAccessKeyFromHeader(headers) : undefined,
+    cookieKey: config.cookieAuth ? getAccessKeyFromCookie(headers) : undefined,
+  });
+
+  const isAuthorized = (keys: PresentedAccessKeys): boolean => {
     if (!verifyAccessKey) {
       return true;
     }
-    return config.headerAuth
-      ? verifyAccessKey(getAccessKeyFromHeader(headers))
-      : verifyAccessKey(getAccessKeyFromCookie(headers));
+    return verifyAccessKey(keys.headerKey ?? keys.cookieKey);
   };
 
   const proxy = new ProxyServer({
@@ -107,14 +117,12 @@ export function createDshProxyServer(
     const pathname = extractPathname(req);
     const isLoginRequest = req.method === "GET" && pathname === "/";
 
+    const { headerKey, cookieKey } = getPresentedAccessKeys(req.headers);
+
     if (verifyAccessKey) {
-      const cookieMode = config.cookieAuth && !config.headerAuth;
-      const cookieKey = cookieMode
-        ? getAccessKeyFromCookie(req.headers)
-        : undefined;
-      if (!isAuthorized(req.headers)) {
-        if (isLoginRequest && cookieMode) {
-          if (cookieKey) {
+      if (!isAuthorized({ headerKey, cookieKey })) {
+        if (isLoginRequest && config.cookieAuth && headerKey === undefined) {
+          if (cookieKey !== undefined) {
             res.writeHead(401, {
               "content-type": "text/plain",
               "cache-control": "no-store",
@@ -131,7 +139,7 @@ export function createDshProxyServer(
         } else {
           res.writeHead(401, { "content-type": "text/plain" });
           res.end(
-            cookieMode
+            config.cookieAuth && headerKey === undefined
               ? "Access key missing or invalid. Open the homepage to sign in."
               : "Access key missing or invalid.",
           );
@@ -184,8 +192,8 @@ export function createDshProxyServer(
       const cookies = upstream.headers.getSetCookie();
       if (
         config.cookieAuth &&
-        !config.headerAuth &&
         verifyAccessKey &&
+        headerKey === undefined &&
         upstream.status === 200
       ) {
         cookies.push(buildAccessKeySetCookie(config.accessKey));
@@ -227,8 +235,9 @@ export function createDshProxyServer(
     socket.once("close", () => sockets.delete(socket));
   });
   server.on("upgrade", (req, socket, head) => {
+    const { headerKey, cookieKey } = getPresentedAccessKeys(req.headers);
     if (verifyAccessKey) {
-      if (!isAuthorized(req.headers)) {
+      if (!isAuthorized({ headerKey, cookieKey })) {
         rejectUpgradeUnauthorized(socket as unknown as net.Socket);
         return;
       }

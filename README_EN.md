@@ -92,7 +92,7 @@ For non-browser clients such as reverse proxies or API tools. When enabled, requ
     bypassDshWebAuth: true
 ```
 
-If `cookieAuth` and `headerAuth` are enabled together, `headerAuth` takes precedence (only the header is checked) and cookie authentication does not apply.
+If `cookieAuth` and `headerAuth` are enabled together, a request carrying both credentials is validated against `headerAuth` only (the cookie is ignored); a request carrying just one credential is validated against that credential and granted access if it passes.
 
 ## Usage Notes
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-public-proxy",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A LAN proxy plugin for the DeepSeek Harness Web UI with optional access key authentication",
   "keywords": [
     "deepseek-harness",
